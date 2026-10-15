@@ -52,10 +52,11 @@ def receive(sock):
 class NumericalWorker:
     """Lazy restart drops the triggering request; never retries old work."""
     def __init__(self, path, velocity=None, *, driver_dir, solver_module,
-                 solver_class, python_executable=None):
+                 solver_class, visualization_module=None, python_executable=None):
         self.python_executable = str(python_executable or sys.executable)
         self.driver_dir = str(Path(driver_dir).resolve())
         self.solver_module, self.solver_class = solver_module, solver_class
+        self.visualization_module = visualization_module or ""
         self.path, self.requested_velocity = str(path), velocity
         self._lock = threading.Lock()
         self._process = self._socket = None
@@ -70,7 +71,7 @@ class NumericalWorker:
         self._socket = parent
         self._process = subprocess.Popen(
             [self.python_executable, str(Path(__file__).resolve()), str(child.fileno()),
-             self.driver_dir, self.solver_module, self.solver_class],
+             self.driver_dir, self.solver_module, self.solver_class, self.visualization_module],
             cwd=self.driver_dir, pass_fds=(child.fileno(),),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=None)
         child.close()
@@ -167,8 +168,24 @@ class NumericalWorker:
     def self_test(self, q):
         return self.call('self_test', {'q': q}, deadline=time.monotonic()+5.)
 
+    def solve_frame(self, body, state, generation):
+        identity = {k: body[k] for k in ('boot_id', 'session_id', 'seq', 'source_seq',
+                    'mapping_epoch', 'model_version', 'calibration_version', 'frame', 'valid_until_ns')}
+        identity['generation'] = generation
+        result = self.call('solve', {'values': body['values'], 'q': state['feedback']['q'],
+            'commanded': state.get('commanded_q'),
+            'measured_ns': state['feedback'].get('arm_ns')}, identity=identity,
+            deadline=body['valid_until_ns']/1e9)
+        self.last_ms = result['last_ms']
+        self.last_envelope = result['envelope']
+        return result['q']
 
-def serve(sock, solver_module, solver_class):
+    def render(self, state, output, hardware, generation):
+        return self.call('render', {'state': state, 'output': output, 'hardware': hardware},
+                         identity={'generation': generation})
+
+
+def serve(sock, solver_module, solver_class, visualization_module):
     solver = None
     key = None
     while True:
@@ -210,6 +227,22 @@ def serve(sock, solver_module, solver_class):
                 targets = [transform({'position': values[i:i+3], 'orientation': values[i+3:i+7]}) for i in (0, 7)]
                 q = solver.solve(targets, data['q'], data['commanded'], deadline_monotonic=deadline)
                 result = {'q': list(q), 'last_ms': solver.last_ms, 'envelope': {**solver.last_envelope, 'measured_ns': data['measured_ns']}}
+            elif op == 'joint_envelope':
+                result = solver.motion_envelope(data['measured'], data['previous'], data['target'], budget)
+            elif op == 'render':
+                from scipy.spatial.transform import Rotation
+                snapshot = importlib.import_module(visualization_module).snapshot
+                if key and key[-1] != identity['generation']:
+                    solver.visualization_sample = solver.last_valid_visualization = None
+                    key = None
+                state = data['state']
+                feedback = state['feedback']
+                fresh = 0 <= time.monotonic_ns()-feedback.get('arm_ns', 0) <= 100_000_000
+                poses = [t[:3, 3].tolist()+Rotation.from_matrix(t[:3, :3]).as_quat().tolist()
+                         for t in solver.palms(feedback['q'])] if fresh else None
+                adapter = SimpleNamespace(solver=solver, link=SimpleNamespace(feedback=lambda: state),
+                    output=data['output'], hardware_output=data['hardware'])
+                result = {'poses': poses, 'visualization': snapshot(adapter)}
             else:
                 raise ValueError('ik_worker_unknown_operation')
             budget()
@@ -228,6 +261,6 @@ if __name__ == '__main__':
     logsafe.install()
     try:
         sys.path.insert(0, sys.argv[2])
-        serve(socket.socket(fileno=int(sys.argv[1])), *sys.argv[3:5])
+        serve(socket.socket(fileno=int(sys.argv[1])), *sys.argv[3:6])
     except (EOFError, OSError):
         pass
