@@ -95,6 +95,16 @@ def test_tracking_loss_is_an_admissible_stop_signal_without_pose():
     assert validate_input(frame, **OPTIONS)["left"]["tracked"] is False
 
 
+def test_g1_consumer_can_bind_source_after_validation_but_identity_is_required():
+    options = {k: v for k, v in OPTIONS.items() if k != "instance_id"}
+    frame = input_frame()
+    assert validate_input(frame, **options)["instance_id"] == frame["instance_id"]
+    for invalid in (None, "", 42):
+        frame["instance_id"] = invalid
+        with pytest.raises(ValueError):
+            validate_input(frame, **options)
+
+
 def test_wrapping_does_not_refresh_a_stale_pose():
     frame = input_frame(); frame["schema"] = "motus.xr.input/1"
     frame["received_monotonic_ns"] -= 300_000_001

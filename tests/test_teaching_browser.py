@@ -5,6 +5,7 @@ Chromium, uvicorn and the Core API dependencies. Never opens robot hardware.
 """
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -24,8 +25,8 @@ CORE = os.environ.get('TEACHING_CORE_ROOT')
 pytestmark = pytest.mark.skipif(not CORE, reason='set TEACHING_CORE_ROOT for cross-repository browser acceptance')
 
 
-@pytest.fixture
-def site(teaching, pair, monkeypatch, tmp_path):
+@contextmanager
+def workbench_site(teaching, plugins, monkeypatch, tmp_path, mcp_id, name):
     pytest.importorskip('playwright.sync_api')
     import uvicorn
     import fastapi
@@ -41,23 +42,13 @@ def site(teaching, pair, monkeypatch, tmp_path):
     config._seed_defaults()
     config.main['skills'] = {'installed': []}
     config.main['canvas_layout'] = {'cards': [{'id': 'core', 'mcpId': 'agentcore', 'toolName': 'decision_core', 'x': 70, 'y': 70},
-        {'id': 'teach', 'mcpId': 'test-piper', 'toolName': 'piper_teaching', 'x': 390, 'y': 70}],
-        'execConnections': [{'fromCardId': 'core', 'toCardId': 'teach', 'toMcpId': 'test-piper', 'toToolName': 'piper_teaching'}]}
-    bundle = DriverBundle([pair, teaching])
-    driver = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(lambda: bundle, 'test-piper', 'test-piper'))
+        {'id': 'teach', 'mcpId': mcp_id, 'toolName': teaching.name, 'x': 390, 'y': 70}],
+        'execConnections': [{'fromCardId': 'core', 'toCardId': 'teach', 'toMcpId': mcp_id, 'toToolName': teaching.name}]}
+    bundle = DriverBundle(plugins)
+    driver = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(lambda: bundle, mcp_id, mcp_id))
     driver_thread = threading.Thread(target=driver.serve_forever, daemon=True); driver_thread.start()
-    config.main['services'] = {'mcp': [{'id': 'test-piper', 'name': '松灵 PiPER（模拟 SDK）',
+    config.main['services'] = {'mcp': [{'id': mcp_id, 'name': name,
         'transport': 'http', 'url': f'http://127.0.0.1:{driver.server_port}/mcp', 'tools': bundle.get_all_tools()}]}
-    ready(pair)
-    stop_input = threading.Event()
-    def feed_vr():
-        sequence = 1
-        while not stop_input.wait(.02):
-            if pair.motion.mode == 'teleop':
-                held = pair.motion.reason not in ('starting', 'waiting_for_input', 'release_both_grips_to_map')
-                pair.motion.receive(frame(sequence, held))
-                sequence += 1
-    input_thread = threading.Thread(target=feed_vr, daemon=True); input_thread.start()
     app = fastapi.FastAPI()
     app.include_router(skills.router, prefix='/api')
     app.include_router(mcp_manage.router, prefix='/api')
@@ -68,10 +59,30 @@ def site(teaching, pair, monkeypatch, tmp_path):
     server = uvicorn.Server(uvicorn.Config(app, log_level='error', lifespan='off'))
     thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True); thread.start()
     wait_for(lambda: server.started)
-    yield f'http://127.0.0.1:{port}', teaching, config
-    stop_input.set(); input_thread.join(2)
-    server.should_exit = True; thread.join(3)
-    driver.shutdown(); driver.server_close(); driver_thread.join(2)
+    try:
+        yield f'http://127.0.0.1:{port}', teaching, config
+    finally:
+        server.should_exit = True; thread.join(3)
+        driver.shutdown(); driver.server_close(); driver_thread.join(2)
+
+
+@pytest.fixture
+def site(teaching, pair, monkeypatch, tmp_path):
+    ready(pair)
+    stop_input = threading.Event()
+    def feed_vr():
+        sequence = 1
+        while not stop_input.wait(.02):
+            if pair.motion.mode == 'teleop':
+                held = pair.motion.reason not in ('starting', 'waiting_for_input', 'release_both_grips_to_map')
+                pair.motion.receive(frame(sequence, held))
+                sequence += 1
+    input_thread = threading.Thread(target=feed_vr, daemon=True); input_thread.start()
+    try:
+        with workbench_site(teaching, [pair, teaching], monkeypatch, tmp_path, "test-piper", "松灵 PiPER（模拟 SDK）") as value:
+            yield value
+    finally:
+        stop_input.set(); input_thread.join(2)
 
 
 @pytest.fixture

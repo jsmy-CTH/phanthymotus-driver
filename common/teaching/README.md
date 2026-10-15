@@ -1,8 +1,10 @@
 # 网页示教扩展
 
-用户在 Phanthymotus 原有 `piper_teaching` 执行卡中选择「录制技能」，点击「执行」，在同一弹窗内完成 **设备检查 → 录制 → 试运行 → 保存**。不增加全局按钮；弹窗外壳复用 Core 现有样式，Driver 页面使用相同的暖白、陶土橙、细边框和控件圆角。当前交付的是**录制回放型技能**：不训练策略，不自动识别物体，不改变轨迹速度，不自动恢复起点。
+用户在 Phanthymotus 的 `piper_teaching` 或 `g1_teaching` 执行卡中选择「录制技能」，点击原有「执行」，在同一弹窗内完成 **设备检查 → 录制 → 试运行 → 保存**。不增加全局按钮；弹窗外壳复用 Core 现有样式，Driver 页面使用相同的暖白、陶土橙、细边框和控件圆角。当前交付的是**录制回放型技能**：不训练策略，不自动识别物体，不改变录制轨迹速度。起点处理沿用各机器人原控制器：PiPER 需要手动恢复，G1 会先低速移动到录制起点。
 
 首个机器人适配器是 `agilex/piper/teaching.py`，基于 PR #395 的双臂控制器；当前仅完成模拟设备验证，尚未进行真机验收。`device.build_plugins` 仅在双臂配置下注册 `piper_teaching`；单臂卡片保持原样。
+
+G1 适配器为 `unitree/g1/teaching.py`，基于更新后的 PR #330。复用同一个 `TeleopControl`、轨迹录制器和执行器，不新增 IK、SDK 连接、控制线程或运动协议。网页宿主及本地 Skill 导入沿用 Core PR #318，本次 G1 适配没有新增 Core 源码修改。
 
 实际浏览器截图和复现方式见 [界面验收记录](../../docs/teaching/README.md)。
 
@@ -18,6 +20,18 @@
 
 本地软件验证使用模拟 SDK 和模拟输入，不证明现场的头显跟踪、CAN 时序、标定或抓取效果。现场先做无物体的小幅动作，再验收固定物体位置的任务；检查停止、输入断流、起点不符和重启后的技能调用。
 
+## 宇树 G1 的使用流程
+
+1. 部署包含 `g1_teaching` 的 G1 Driver，并配套 Core PR #318 的通用工作台和 Skill 导入支持。沿用原 G1 部署的持久化数据目录和 `/run/g1-machine-id` 挂载；不要把数据写在容器临时层。
+2. 在画布将 PICO 输入连接到 `teleop_control`，启动项目；将 `g1_teaching` 执行卡连接到决策核心。页面操作使用当前卡片绑定的 G1 MCP 服务，不直接从浏览器连接机器人 IP。
+3. 在 `g1_teaching` 选择「录制技能」并点击「执行」。点击「检查设备」，查看本体反馈与模式、机型与设备身份、控制状态、VR 通道四项结果。检查仅读取状态，不使能、不切模式、不申请运动权。
+4. 进入录制后，按原遥操流程：人和机器人双臂下垂，松开握把，长按 X+A 至少一秒建立基准。工作台不另建会话；只有原控制器报告有效输入、映射和可录制状态时才能开始录制。按住双握把示范，松握暂停；记录原控制器成功下发的关节参考、反馈和暂停时间。
+5. 点击「结束录制」，等待文件完整落盘及原控制器停止交权。页面显示 G1_23 的双臂 10 关节，不显示夹爪。检查起点差异、恢复物体布置，确认活动空间和接管后试运行。G1 会按原控制器的 0.1 rad/s 参考变化率先移到起点，再沿录制时间轴回放；不套用 PiPER 的位置容差，也不重新执行 IK。
+6. 等待相同 `action_id` 的真实回放终态，现场确认动作效果，填写名称和使用条件后保存。`completed` 表示指令发送和停止交权完成，不保证物体操作成功。
+7. 保存后普通 Skill 立即加入当前 Core 的本地技能库，下一次对话可发现并通过 `activate_skill` 加载，然后调用连接的 `g1_teaching.run`。每次运行仍要先预览、确认本次路径与接管，再执行。回放不依赖 PICO 跟踪；页面「使用已有录制」也允许在未连接 VR 时载入完整文件并重新试运行。
+
+录制与资产分别保存在 G1 `data_dir/recordings/` 和 `data_dir/skills/`。资产绑定原文件 SHA-256、设备身份、模型和几何 profile；换设备或改变文件会拒绝运行。示教预览在 60 秒内单次有效，传入原回放入口的预期 SHA 和停止代次用于防止检查到启动之间文件变化或停止被覆盖；原有只传 `filename` 的遥操回放调用保持兼容。
+
 ## 扩展边界
 
 - `common/teaching/service.py`：草稿、发布条件、资产持久化、技能定义。
@@ -25,21 +39,22 @@
 - 机器人适配器：设备检查、遥操会话、录制和回放、实际完成结果。高频控制继续属于原有机器人控制器。
 - Phanthymotus：发现 `inputSchema.x-workbench`，装载页面、转发当前工具的允许操作、导入已有技能格式。Agent Loop、技能激活与 ACP 无需改动。
 
-页面通过 MCP `ui` 获取，不需要额外的 Web 服务、端口、前端构建或 CDN。`common/` 已在 PiPER 镜像的复制范围内。
+页面通过 MCP `ui` 获取，不需要额外的 Web 服务、端口、前端构建或 CDN。`common/` 已在 PiPER 和 G1 镜像的复制范围内。
 
 ## 其他机器人需要实现的适配接口
 
-目前共享页面面向双臂 VR 示教；天弈或 G1 的第一阶段可适配相同的双臂数据形状。若要录制底盘、躯干或更多关节，需要扩展页面的数据可视化，不能直接声称已有全身适配。
+目前共享页面面向双臂 VR 示教；PiPER 为每臂 6 关节和夹爪，G1_23 为每臂 5 关节和固定假手。页面从适配器读取关节分组、夹爪能力、会话入口和提示。天弈可实现同一接口；底盘、躯干及全身示教尚未适配。
 
 | 接口 | 责任与返回值 |
 | --- | --- |
 | `title` | 页面机器人名称 |
+| `presentation` / `resources` / `completion_timeout` | 关节分组、夹爪能力、提示与会话来源；占用的原有资源及完成等待上限 |
 | `info()` | 无连接/运动副作用；含 `state`、`busy`、`session_id`、`recording`、完整录制列表、`input_fresh/mapped/can_record` 与尚未执行的检查项声明 |
 | `check()` | 显式读取设备条件；返回 `ready` 与 `checks[{id,label,ok,reason?,help?}]`；逐项提供结果与处理建议，不能把通道连通当成实时跟踪；不得自行使能、切模式 |
-| `begin(args)` | `execute=false` 预览；执行需短时、单次、绑定当前状态的 `preview_id` 和本次确认 |
+| `begin(args)` | 页面建立会话时须预览及确认；若 `session_start=controller`，页面隐藏此入口，录制绑定原控制器已建立的会话 |
 | `record()` / `finish()` | Driver 也须检查实时输入和映射，不能只禁用前端按钮；录制实际下发目标和反馈，结束必须区分完整文件、仍在落盘、失败，并请求停止遥操 |
 | `inspect(filename)` | 校验完整性、校验和与当前设备绑定；返回 `filename/sha256/binding/duration_seconds/frames/preview` |
-| `start_difference(filename)` | 返回起点目标、当前差异和容差；仅报告，不自动回起点 |
+| `start_difference(filename)` | 只读报告起点目标与差异；`can_trial` 表示是否允许请求试运行，`mode/message/tolerance_label` 如实说明机器人自己的起点处理方式 |
 | `play(filename,args)` | 复用原控制器的预览、互斥锁、限速、工作空间、跟踪/反馈检查；返回异步 `action_id` |
 | `wait(action_id)` | 等到控制器的真实终态；不能用录制时长推算成功，取消和异常不能返回 completed |
 | `stop()` | 随时可用，包括文件验证期间；请求停止后仍需要读取终态 |
@@ -54,7 +69,7 @@
 
 Core 中只保存标准技能定义，资产不复制进 Core 数据库，也不自动发布到资源中心。卸载本地技能不删除 Driver 资产。当前只有一个活动草稿；页面刷新恢复草稿，Driver 重启后须载入完整录制重新试运行。未完成文件不能导入。
 
-保存直接写入现有 `skills.installed`，新技能 `active=true`。下一次对话构建提示词时即可发现，随后由既有 `activate_skill` 加载完整指令，调用已连接的 `piper_teaching.run`。无需重启、刷新页面或手工导入文件。执行卡连接只配置一次，后续技能沿用；未连接时页面会明确提示，保存本身不增加执行权限。
+保存直接写入现有 `skills.installed`，新技能 `active=true`。下一次对话构建提示词时即可发现，随后由既有 `activate_skill` 加载完整指令，调用已连接的 `piper_teaching.run` 或 `g1_teaching.run`。无需重启、刷新页面或手工导入文件。执行卡连接只配置一次，后续技能沿用；未连接时页面会明确提示，保存本身不增加执行权限。
 
 保存到 Driver 后若 Core 导入失败，可保持相同表单重试：两边均幂等。同一个已保存草稿不允许覆盖元数据，已安装同 slug 的不同定义返回冲突。
 
@@ -64,7 +79,7 @@ Core 中只保存标准技能定义，资产不复制进 Core 数据库，也不
 
 卡片现有「运行技能」仍是参数表单，需提供 `asset_id`，先取得预览，再携带 `preview_id` 和本次确认执行。尚未实现按保存的技能名称选择并运行的页面；保存成功页的调用示例表示 Agent 的使用方式，不是网页内的新聊天入口。
 
-生成的 Skill 定义包含工具名、资产 ID 和使用条件，但尚未固定来源 MCP 服务 ID / 卡片 ID。设备、标定和轨迹校验仍由 Driver 强制执行；同时连接多个同名工具服务时，Agent 选择资产所属服务的能力尚未完成明确绑定和验证。当前验收限于一个绑定的模拟 PiPER 服务，不能据此声称多设备路由已经完成。
+生成的 Skill 定义包含工具名、资产 ID 和使用条件，但尚未固定来源 MCP 服务 ID / 卡片 ID。设备、标定和轨迹校验仍由 Driver 强制执行；同时连接多个同名工具服务时，Agent 选择资产所属服务的能力尚未完成明确绑定和验证。当前验收分别覆盖一个绑定的模拟 PiPER 服务和一个绑定的模拟 G1 服务，不能据此声称多设备路由已经完成。
 
 测试直接执行既有 Skill 发现、激活和 MCP 调用代码，没有调用真实 LLM，也没有连接真实机器人、头显或 ROS2 DDS 网络。待补齐设备来源绑定、便捷运行入口并完成现场验收后，再评估完整使用体验。
 
@@ -79,10 +94,10 @@ uv run --no-project --with pytest --with numpy --with pyyaml python -m pytest -q
 
 ```sh
 TEACHING_CORE_ROOT=/path/to/phanthymotus uv run --no-project \
-  --with pytest --with numpy --with pyyaml --with playwright --with uvicorn \
+  --with pytest --with numpy --with scipy --with pyyaml --with playwright --with uvicorn \
   --with fastapi --with python-multipart --with httpx --with aiohttp --with aiofiles \
   --with openai --with html2text --with jsonschema \
-  python -m pytest -q tests/test_teaching_browser.py
+  python -m pytest -q tests/test_teaching_browser.py tests/test_g1_teaching_browser.py
 ```
 
 可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定现有 Chromium，可用 `TEACHING_SCREENSHOT` 指定浏览器截图输出路径。

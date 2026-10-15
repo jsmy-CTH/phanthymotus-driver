@@ -57,6 +57,18 @@ def wait_for(predicate):
         time.sleep(.002)
 
 
+def test_worker_without_visualization_keeps_piper_constructor_compatible(tmp_path):
+    worker = NumericalWorker(tmp_path, driver_dir=Path(__file__).parent,
+        solver_module=__name__, solver_class='BlockingSolver')
+    try:
+        identity = dict(boot_id='test', session_id='test', mapping_epoch=1, generation=1)
+        result = worker.call('solve', {'values': [0.]*14, 'q': [0.]*10,
+            'commanded': [0.]*10, 'measured_ns': time.monotonic_ns()}, identity=identity)
+        assert result['q'] == [.1]*10
+    finally:
+        worker.close()
+
+
 def test_threads_timeout_restart_discard_old_work_and_resume(tmp_path, monkeypatch):
     motion, published, proofs = controller()
     card, sample = input_card(tmp_path)

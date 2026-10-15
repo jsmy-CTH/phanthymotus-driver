@@ -10,6 +10,16 @@ from common.teleop_contract import MAX_INPUT_AGE_NS
 
 class PiperTeachingAdapter:
     title = "松灵 PiPER · 双臂"
+    presentation = {
+        "session_start": "workbench",
+        "joint_groups": [{"label": "左臂", "count": 6}, {"label": "右臂", "count": 6}],
+        "grippers": True, "recording_label": "双臂与夹爪",
+        "prepare_hint": "检查连接、标定、运动许可和遥操通道后继续。",
+        "next_hint": "进入遥操后确认实时输入，松开双手握键建立映射，再开始录制。",
+        "trial_hint": "恢复物体布置和双臂起点，验证录制效果。",
+        "conditions_placeholder": "例如：零件和托盘位置固定，双臂已恢复录制起点。",
+    }
+    replay_instruction = "不得自动回起点、切模式、使能、换设备或改速度；先通过原控制卡手动恢复起点。"
     checks = (
         ("connection", "机器人连接", "请检查双臂连接和 CAN 配置。"),
         ("calibration", "标定与左右绑定", "请核验标定文件和左右臂绑定。"),
@@ -119,7 +129,8 @@ class PiperTeachingAdapter:
         return {"ready": max(map(abs, joint_delta)) <= .05 and max(map(abs, width_delta)) <= .5,
                 "target_joints_deg": [math.degrees(q) for q in first["target_q"]],
                 "target_width_mm": first["target_width_mm"], "joint_delta_deg": joint_delta,
-                "width_delta_mm": width_delta, "joint_tolerance_deg": .05, "width_tolerance_mm": .5}
+                "width_delta_mm": width_delta, "joint_tolerance_deg": .05, "width_tolerance_mm": .5,
+                "tolerance_label": "关节 ±0.05° · 夹爪 ±0.5 mm"}
 
     def play(self, filename, args):
         return self._call("piper_motion", "play", {"filename": filename, **self._confirmation(args)})
